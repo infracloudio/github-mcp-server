@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "call_tool",
+  "params": {
+    "tool": "list_open_prs",
+    "arguments": {
+      "owner": "kubernetes",
+      "repo": "kubernetes"
+    }
+  }
+}
