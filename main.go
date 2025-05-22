@@ -19,9 +19,9 @@ func main() {
 		server.WithToolCapabilities(false),
 	)
 
-	// Define the tool: list_open_prs
-	listPRsTool := mcp.NewTool("list_open_prs",
-		mcp.WithDescription("List open pull requests in a GitHub repository"),
+	// Define the tools
+	listPRsTool := mcp.NewTool("list_prs",
+		mcp.WithDescription("List pull requests in a GitHub repository"),
 		mcp.WithString("owner",
 			mcp.Required(),
 			mcp.Description("GitHub org or user"),
@@ -30,15 +30,58 @@ func main() {
 			mcp.Required(),
 			mcp.Description("GitHub repository name"),
 		),
+		mcp.WithString("state",
+			mcp.Description("State of PRs to list (open, closed, all). Defaults to open"),
+		),
 	)
 
-	// Register the tool with its handler
+	listIssuestool := mcp.NewTool("list_issues",
+		mcp.WithDescription("List issues in a GitHub repository"),
+		mcp.WithString("owner",
+			mcp.Required(),
+			mcp.Description("GitHub org or user"),
+		),
+		mcp.WithString("repo",
+			mcp.Required(),
+			mcp.Description("GitHub repository name"),
+		),
+		mcp.WithString("state",
+			mcp.Description("State of issues to list (open, closed, all). Defaults to open"),
+		),
+	)
+
+	// Register the tools with their handlers
 	s.AddTool(listPRsTool, listOpenPRsHandler)
+	s.AddTool(listIssuestool, listOpenIssuesHandler)
 
 	// Run the MCP server
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Printf("Server error: %v\n", err)
 	}
+}
+
+// listOpenIssuesHandler converts MCP input into raw JSON and delegates to tools.GetOpenIssues
+func listOpenIssuesHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	raw, err := json.Marshal(req.Params.Arguments)
+	if err != nil {
+		return nil, errors.New("failed to marshal arguments")
+	}
+
+	issues, err := tools.GetOpenIssues(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(issues) == 0 {
+		return mcp.NewToolResultText("No open issues found."), nil
+	}
+
+	var output string
+	for _, issue := range issues {
+		output += fmt.Sprintf("- #%d: %s\n", issue.GetNumber(), issue.GetTitle())
+	}
+
+	return mcp.NewToolResultText(output), nil
 }
 
 // listOpenPRsHandler converts MCP input into raw JSON and delegates to tools.GetOpenPRs
