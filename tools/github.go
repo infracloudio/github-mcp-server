@@ -9,7 +9,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func GitHubClient(ctx context.Context) *github.Client {
+var GitHubClient = func(ctx context.Context) *github.Client {
 	token := os.Getenv("GITHUB_TOKEN")
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	tc := oauth2.NewClient(ctx, ts)
@@ -21,15 +21,17 @@ type ToolInput struct {
 	Repo  string `json:"repo"`
 }
 
-func GetOpenPRs(ctx context.Context, input json.RawMessage) (any, error) {
+func GetOpenPRs(ctx context.Context, input json.RawMessage) ([]*github.PullRequest, error) {
 	var params ToolInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return nil, err
 	}
+
 	client := GitHubClient(ctx)
 	prs, _, err := client.PullRequests.List(ctx, params.Owner, params.Repo, nil)
 	if err != nil {
 		return nil, err
 	}
+
 	return prs, nil
 }

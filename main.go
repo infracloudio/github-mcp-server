@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/google/go-github/github"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
@@ -49,15 +48,9 @@ func listOpenPRsHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		return nil, errors.New("failed to marshal arguments")
 	}
 
-	result, err := tools.GetOpenPRs(ctx, raw)
+	prList, err := tools.GetOpenPRs(ctx, raw)
 	if err != nil {
 		return nil, err
-	}
-
-	// Convert result to simple string output (titles of PRs)
-	prList, ok := result.([]*github.PullRequest)
-	if !ok {
-		return nil, errors.New("unexpected result format from GetOpenPRs")
 	}
 
 	if len(prList) == 0 {
