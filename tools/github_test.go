@@ -70,3 +70,49 @@ func TestGetOpenPRs(t *testing.T) {
 		assert.Equal(t, "open", *pr.State)
 	}
 }
+
+func TestGetOpenIssuesInvalidJSON(t *testing.T) {
+    ctx := context.Background()
+    invalidJSON := json.RawMessage(`{"invalid": json}`)
+    
+    _, err := GetOpenIssues(ctx, invalidJSON)
+    assert.Error(t, err)
+}
+
+func TestGetOpenIssuesInvalidRepo(t *testing.T) {
+    if os.Getenv("GITHUB_TOKEN") == "" {
+        t.Skip("GITHUB_TOKEN not set")
+    }
+    
+    input := ToolInput{
+        Owner: "nonexistent",
+        Repo:  "nonexistent-repo-12345",
+        State: "open",
+    }
+    rawInput, _ := json.Marshal(input)
+    
+    ctx := context.Background()
+    _, err := GetOpenIssues(ctx, rawInput)
+    assert.Error(t, err)
+}
+
+func TestGetOpenPRsDefaultState(t *testing.T) {
+    if os.Getenv("GITHUB_TOKEN") == "" {
+        t.Skip("GITHUB_TOKEN not set")
+    }
+    
+    input := ToolInput{
+        Owner: "golang",
+        Repo:  "go",
+        // State is empty, should default to "open"
+    }
+    rawInput, _ := json.Marshal(input)
+    
+    ctx := context.Background()
+    prs, err := GetOpenPRs(ctx, rawInput)
+    
+    assert.NoError(t, err)
+    for _, pr := range prs {
+        assert.Equal(t, "open", *pr.State)
+    }
+}
