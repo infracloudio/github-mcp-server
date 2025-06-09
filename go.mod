@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/coreos/go-oidc/v3 v3.14.1 // indirect
+	github.com/coreos/go-oidc/v3 v3.14.1 // direct
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.0.5 // indirect
 	github.com/google/uuid v1.6.0 // indirect
