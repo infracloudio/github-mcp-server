@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/himanshusharma89/github-mcp-server/auth"  // adjust this path if needed
 	"github.com/himanshusharma89/github-mcp-server/tools" // adjust this path if needed
 )
 
@@ -231,7 +234,7 @@ func searchIssuesHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 			for _, label := range issue.Labels {
 				labels += fmt.Sprintf("[%s] ", label.GetName())
 			}
-			
+
 			line := fmt.Sprintf("- #%d: %s %s(Score: %d - %d comments, %d reactions)",
 				issue.GetNumber(), issue.GetTitle(), labels, score, issue.GetComments(), issue.GetReactions().GetTotalCount())
 
@@ -361,4 +364,47 @@ func analyzePriorityHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	}
 
 	return mcp.NewToolResultText(output.String()), nil
+}
+
+// wrapWithAuth wraps a tool handler with authentication and permission checks
+func wrapWithAuth(am *auth.AuthMiddleware, permission auth.Permission, handler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// For development, use environment variable for authentication
+		token := os.Getenv("MCP_AUTH_TOKEN")
+		if token == "" {
+			return nil, errors.New("authentication token not found in environment")
+		}
+
+		// Create a mock http.Request to reuse the auth middleware
+		httpReq, _ := http.NewRequest("POST", "/", nil)
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+		httpReq = httpReq.WithContext(ctx)
+
+		var result *mcp.CallToolResult
+		var handlerErr error
+
+		// Use the auth middleware
+		am.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Check permission
+			userInfo, ok := r.Context().Value(auth.UserContextKey).(*auth.UserInfo)
+			if !ok {
+				handlerErr = errors.New("user not authenticated")
+				return
+			}
+
+			if !auth.HasPermission(userInfo.Roles, permission) {
+				handlerErr = errors.New("permission denied")
+				return
+			}
+
+			// Call the original handler with the authenticated context
+			result, handlerErr = handler(r.Context(), req)
+		})).ServeHTTP(nil, httpReq)
+
+		if handlerErr != nil {
+			return nil, handlerErr
+		}
+
+		return result, nil
+	}
 }
