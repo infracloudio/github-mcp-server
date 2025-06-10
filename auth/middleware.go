@@ -19,6 +19,24 @@ type AuthMiddleware struct {
 	oauth *OAuthConfig
 }
 
+type responseWriter struct {
+	status int
+	body   string
+}
+
+func (w *responseWriter) Header() http.Header {
+	return http.Header{}
+}
+
+func (w *responseWriter) Write(b []byte) (int, error) {
+	w.body = string(b)
+	return len(b), nil
+}
+
+func (w *responseWriter) WriteHeader(statusCode int) {
+	w.status = statusCode
+}
+
 func NewAuthMiddleware(oauth *OAuthConfig) *AuthMiddleware {
 	return &AuthMiddleware{
 		oauth: oauth,
@@ -30,13 +48,17 @@ func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "No authorization header", http.StatusUnauthorized)
+			if w != nil {
+				http.Error(w, "No authorization header", http.StatusUnauthorized)
+			}
 			return
 		}
 
 		bearerToken := strings.TrimPrefix(authHeader, "Bearer ")
 		if bearerToken == authHeader {
-			http.Error(w, "Invalid authorization header format", http.StatusUnauthorized)
+			if w != nil {
+				http.Error(w, "Invalid authorization header format", http.StatusUnauthorized)
+			}
 			return
 		}
 
@@ -46,13 +68,20 @@ func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 
 		userInfo, err := am.oauth.GetUserInfo(r.Context(), token)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to get user info: %v", err), http.StatusUnauthorized)
+			if w != nil {
+				http.Error(w, fmt.Sprintf("Failed to get user info: %v", err), http.StatusUnauthorized)
+			}
 			return
 		}
 
 		// Add user info to context
 		ctx := context.WithValue(r.Context(), UserContextKey, userInfo)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		if w != nil {
+			next.ServeHTTP(w, r.WithContext(ctx))
+		} else {
+			mockWriter := &responseWriter{}
+			next.ServeHTTP(mockWriter, r.WithContext(ctx))
+		}
 	})
 }
 
@@ -62,12 +91,16 @@ func (am *AuthMiddleware) RequirePermission(permission Permission) func(http.Han
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userInfo, ok := r.Context().Value(UserContextKey).(*UserInfo)
 			if !ok {
-				http.Error(w, "User not authenticated", http.StatusUnauthorized)
+				if w != nil {
+					http.Error(w, "User not authenticated", http.StatusUnauthorized)
+				}
 				return
 			}
 
 			if !HasPermission(userInfo.Roles, permission) {
-				http.Error(w, "Permission denied", http.StatusForbidden)
+				if w != nil {
+					http.Error(w, "Permission denied", http.StatusForbidden)
+				}
 				return
 			}
 

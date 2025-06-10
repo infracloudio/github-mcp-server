@@ -44,15 +44,16 @@ var RolePermissions = map[Role][]Permission{
 // HasPermission checks if a user with given roles has a specific permission
 func HasPermission(userRoles []string, requiredPermission Permission) bool {
 	for _, roleStr := range userRoles {
-		role := Role(strings.ToLower(roleStr))
-		permissions, exists := RolePermissions[role]
-		if !exists {
-			continue
-		}
-
-		for _, permission := range permissions {
-			if permission == requiredPermission {
-				return true
+		// Convert role to lowercase for case-insensitive comparison
+		roleLower := strings.ToLower(roleStr)
+		for role, permissions := range RolePermissions {
+			// Compare roles case-insensitively
+			if strings.EqualFold(string(role), roleLower) {
+				for _, permission := range permissions {
+					if permission == requiredPermission {
+						return true
+					}
+				}
 			}
 		}
 	}
@@ -75,10 +76,12 @@ func GetUserPermissions(roles []string) []Permission {
 	permissionMap := make(map[Permission]bool)
 
 	for _, roleStr := range roles {
-		role := Role(strings.ToLower(roleStr))
-		if permissions, exists := RolePermissions[role]; exists {
-			for _, permission := range permissions {
-				permissionMap[permission] = true
+		roleLower := strings.ToLower(roleStr)
+		for role, permissions := range RolePermissions {
+			if strings.EqualFold(string(role), roleLower) {
+				for _, permission := range permissions {
+					permissionMap[permission] = true
+				}
 			}
 		}
 	}

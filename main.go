@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -13,11 +14,27 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/himanshusharma89/github-mcp-server/auth"  // adjust this path if needed
-	"github.com/himanshusharma89/github-mcp-server/tools" // adjust this path if needed
+	"github.com/himanshusharma89/github-mcp-server/auth"   // adjust this path if needed
+	"github.com/himanshusharma89/github-mcp-server/config" // adjust this path if needed
+	"github.com/himanshusharma89/github-mcp-server/tools"  // adjust this path if needed
 )
 
 func main() {
+	// Initialize security config
+	securityConfig := config.NewSecurityConfig()
+	if err := securityConfig.Validate(); err != nil {
+		log.Fatalf("Security configuration error: %v", err)
+	}
+
+	// Initialize OAuth config
+	oauthConfig, err := auth.NewOAuthConfig(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to initialize OAuth: %v", err)
+	}
+
+	// Initialize auth middleware
+	authMiddleware := auth.NewAuthMiddleware(oauthConfig)
+
 	s := server.NewMCPServer(
 		"GitHub MCP Server",
 		"0.1.0",
@@ -129,13 +146,19 @@ func main() {
 		),
 	)
 
-	// Register the tools with their handlers
-	s.AddTool(listPRsTool, listOpenPRsHandler)
-	s.AddTool(listIssuestool, listOpenIssuesHandler)
-	s.AddTool(searchIssuesTool, searchIssuesHandler)
-	s.AddTool(pendingReviewsTool, getPendingReviewsHandler)
-	s.AddTool(createIssueTool, createIssueHandler)
-	s.AddTool(priorityTool, analyzePriorityHandler)
+	// Add new permissions tool
+	permissionsTool := mcp.NewTool("get_my_permissions",
+		mcp.WithDescription("Get current user's roles and permissions"),
+	)
+
+	// Register the tools with their handlers wrapped in authentication middleware
+	s.AddTool(listPRsTool, wrapWithAuth(authMiddleware, auth.PermissionReadTools, listOpenPRsHandler))
+	s.AddTool(listIssuestool, wrapWithAuth(authMiddleware, auth.PermissionReadTools, listOpenIssuesHandler))
+	s.AddTool(searchIssuesTool, wrapWithAuth(authMiddleware, auth.PermissionReadTools, searchIssuesHandler))
+	s.AddTool(pendingReviewsTool, wrapWithAuth(authMiddleware, auth.PermissionReadTools, getPendingReviewsHandler))
+	s.AddTool(createIssueTool, wrapWithAuth(authMiddleware, auth.PermissionWriteTools, createIssueHandler))
+	s.AddTool(priorityTool, wrapWithAuth(authMiddleware, auth.PermissionReadTools, analyzePriorityHandler))
+	s.AddTool(permissionsTool, wrapWithAuth(authMiddleware, auth.PermissionReadTools, getMyPermissionsHandler))
 
 	// Run the MCP server
 	if err := server.ServeStdio(s); err != nil {
@@ -366,45 +389,112 @@ func analyzePriorityHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	return mcp.NewToolResultText(output.String()), nil
 }
 
+// getMyPermissionsHandler gets current user's roles and permissions
+func getMyPermissionsHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// Get user info from context
+	userInfo, ok := ctx.Value(auth.UserContextKey).(*auth.UserInfo)
+	if !ok || userInfo == nil {
+		return mcp.NewToolResultError("failed to get user information"), nil
+	}
+
+	// Get all permissions for the user's roles
+	permissions := auth.GetUserPermissions(userInfo.Roles)
+
+	var output strings.Builder
+	output.WriteString("🔑 Your Access Details:\n\n")
+
+	// Show roles
+	output.WriteString("Roles:\n")
+	for _, role := range userInfo.Roles {
+		output.WriteString(fmt.Sprintf("- %s\n", role))
+	}
+	output.WriteString("\n")
+
+	// Show permissions
+	output.WriteString("Permissions:\n")
+	for _, perm := range permissions {
+		output.WriteString(fmt.Sprintf("- %s\n", perm))
+	}
+	output.WriteString("\n")
+
+	// Show available tools based on permissions
+	output.WriteString("Available Tools:\n")
+	if auth.HasPermission(userInfo.Roles, auth.PermissionReadTools) {
+		output.WriteString("- list_prs (List pull requests)\n")
+		output.WriteString("- list_issues (List repository issues)\n")
+		output.WriteString("- search_issues (Search issues by keyword)\n")
+		output.WriteString("- get_pending_reviews (Get PRs pending review)\n")
+		output.WriteString("- analyze_issue_priority (Analyze issue priority)\n")
+		output.WriteString("- get_my_permissions (Show your access details)\n")
+	}
+	if auth.HasPermission(userInfo.Roles, auth.PermissionWriteTools) {
+		output.WriteString("- create_issue (Create new issues)\n")
+	}
+
+	return mcp.NewToolResultText(output.String()), nil
+}
+
 // wrapWithAuth wraps a tool handler with authentication and permission checks
 func wrapWithAuth(am *auth.AuthMiddleware, permission auth.Permission, handler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// For development, use environment variable for authentication
 		token := os.Getenv("MCP_AUTH_TOKEN")
 		if token == "" {
-			return nil, errors.New("authentication token not found in environment")
+			return mcp.NewToolResultError("authentication token not found in environment"), nil
 		}
 
-		// Create a mock http.Request to reuse the auth middleware
+		// Create a mock request context with the token
 		httpReq, _ := http.NewRequest("POST", "/", nil)
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 		httpReq = httpReq.WithContext(ctx)
 
-		var result *mcp.CallToolResult
-		var handlerErr error
+		mockWriter := &mockResponseWriter{}
+		authenticated := false
+		var userInfo *auth.UserInfo
 
 		// Use the auth middleware
 		am.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check permission
-			userInfo, ok := r.Context().Value(auth.UserContextKey).(*auth.UserInfo)
+			ui, ok := r.Context().Value(auth.UserContextKey).(*auth.UserInfo)
 			if !ok {
-				handlerErr = errors.New("user not authenticated")
 				return
 			}
+			authenticated = true
+			userInfo = ui
+		})).ServeHTTP(mockWriter, httpReq)
 
-			if !auth.HasPermission(userInfo.Roles, permission) {
-				handlerErr = errors.New("permission denied")
-				return
-			}
-
-			// Call the original handler with the authenticated context
-			result, handlerErr = handler(r.Context(), req)
-		})).ServeHTTP(nil, httpReq)
-
-		if handlerErr != nil {
-			return nil, handlerErr
+		if !authenticated || userInfo == nil {
+			return mcp.NewToolResultError("authentication failed"), nil
 		}
 
-		return result, nil
+		if !auth.HasPermission(userInfo.Roles, permission) {
+			return mcp.NewToolResultError("permission denied"), nil
+		}
+
+		// Add user info to the context before calling the handler
+		ctxWithUser := context.WithValue(ctx, auth.UserContextKey, userInfo)
+		return handler(ctxWithUser, req)
 	}
+}
+
+// mockResponseWriter implements http.ResponseWriter for testing
+type mockResponseWriter struct {
+	headers http.Header
+	status  int
+	body    []byte
+}
+
+func (w *mockResponseWriter) Header() http.Header {
+	if w.headers == nil {
+		w.headers = make(http.Header)
+	}
+	return w.headers
+}
+
+func (w *mockResponseWriter) Write(b []byte) (int, error) {
+	w.body = b
+	return len(b), nil
+}
+
+func (w *mockResponseWriter) WriteHeader(statusCode int) {
+	w.status = statusCode
 }

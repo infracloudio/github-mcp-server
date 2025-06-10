@@ -2,10 +2,12 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -19,11 +21,18 @@ type OAuthConfig struct {
 	KeycloakRealm string
 }
 
+type ResourceAccess struct {
+	MCPClient struct {
+		Roles []string `json:"roles"`
+	} `json:"mcp-client"`
+}
+
 type UserInfo struct {
-	Sub               string   `json:"sub"`
-	PreferredUsername string   `json:"preferred_username"`
-	Email             string   `json:"email"`
-	Roles             []string `json:"roles"`
+	Sub               string         `json:"sub"`
+	PreferredUsername string         `json:"preferred_username"`
+	Email             string         `json:"email"`
+	ResourceAccess    ResourceAccess `json:"resource_access"`
+	Roles             []string       `json:"roles,omitempty"`
 }
 
 func NewOAuthConfig(ctx context.Context) (*OAuthConfig, error) {
@@ -60,25 +69,61 @@ func NewOAuthConfig(ctx context.Context) (*OAuthConfig, error) {
 }
 
 func (o *OAuthConfig) GetUserInfo(ctx context.Context, token *oauth2.Token) (*UserInfo, error) {
+	// Parse the JWT token directly first
+	parts := strings.Split(token.AccessToken, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid token format")
+	}
+
+	// Add padding if needed
+	if l := len(parts[1]) % 4; l > 0 {
+		parts[1] += strings.Repeat("=", 4-l)
+	}
+
+	// Decode the payload (second part)
+	payload, err := base64.URLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode token payload: %v", err)
+	}
+
+	// Parse into UserInfo struct
 	userInfo := &UserInfo{}
-
-	// Get user info from Keycloak
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/realms/%s/protocol/openid-connect/userinfo", o.KeycloakURL, o.KeycloakRealm), nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %v", err)
+	if err := json.Unmarshal(payload, userInfo); err != nil {
+		return nil, fmt.Errorf("failed to parse token payload: %v", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	// Extract roles from ResourceAccess
+	if userInfo.ResourceAccess.MCPClient.Roles != nil && len(userInfo.ResourceAccess.MCPClient.Roles) > 0 {
+		userInfo.Roles = userInfo.ResourceAccess.MCPClient.Roles
+	} else {
+		// Fallback to userinfo endpoint if roles not in token
+		req, err := http.NewRequest("GET", fmt.Sprintf("%s/realms/%s/protocol/openid-connect/userinfo", o.KeycloakURL, o.KeycloakRealm), nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %v", err)
+		}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user info: %v", err)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get user info: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if err := json.NewDecoder(resp.Body).Decode(userInfo); err != nil {
+			return nil, fmt.Errorf("failed to decode user info: %v", err)
+		}
+
+		// Extract roles from ResourceAccess again (in case they were in userinfo)
+		if userInfo.ResourceAccess.MCPClient.Roles != nil && len(userInfo.ResourceAccess.MCPClient.Roles) > 0 {
+			userInfo.Roles = userInfo.ResourceAccess.MCPClient.Roles
+		}
 	}
-	defer resp.Body.Close()
 
-	if err := json.NewDecoder(resp.Body).Decode(userInfo); err != nil {
-		return nil, fmt.Errorf("failed to decode user info: %v", err)
+	// Ensure we have roles
+	if len(userInfo.Roles) == 0 {
+		return nil, fmt.Errorf("no roles found in token or userinfo")
 	}
 
 	return userInfo, nil
