@@ -231,7 +231,7 @@ func searchIssuesHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 			for _, label := range issue.Labels {
 				labels += fmt.Sprintf("[%s] ", label.GetName())
 			}
-			
+
 			line := fmt.Sprintf("- #%d: %s %s(Score: %d - %d comments, %d reactions)",
 				issue.GetNumber(), issue.GetTitle(), labels, score, issue.GetComments(), issue.GetReactions().GetTotalCount())
 
@@ -309,14 +309,31 @@ func getPendingReviewsHandler(ctx context.Context, req mcp.CallToolRequest) (*mc
 
 // createIssueHandler creates a new GitHub issue
 func createIssueHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	raw, err := json.Marshal(req.Params.Arguments)
+	// Safely cast Arguments to map[string]interface{}
+	args, ok := req.Params.Arguments.(map[string]interface{})
+	if !ok {
+		return mcp.NewToolResultText("❌ Invalid arguments format."), nil
+	}
+
+	// Convert labels string to []string if needed
+	if labels, ok := args["labels"]; ok {
+		if labelStr, ok := labels.(string); ok && labelStr != "" {
+			labelSlice := strings.Split(labelStr, ",")
+			for i, v := range labelSlice {
+				labelSlice[i] = strings.TrimSpace(v)
+			}
+			args["labels"] = labelSlice
+		}
+	}
+
+	raw, err := json.Marshal(args)
 	if err != nil {
-		return nil, errors.New("failed to marshal arguments")
+		return mcp.NewToolResultText(fmt.Sprintf("❌ Failed to marshal arguments: %v", err)), nil
 	}
 
 	issue, err := tools.CreateIssue(ctx, raw)
 	if err != nil {
-		return nil, err
+		return mcp.NewToolResultText(fmt.Sprintf("❌ Failed to create issue: %v", err)), nil
 	}
 
 	output := fmt.Sprintf("✅ Issue created successfully!\n\n"+
